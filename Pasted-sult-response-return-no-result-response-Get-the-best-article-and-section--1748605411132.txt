@@ -1,0 +1,234 @@
+sult_response)
+            return no_result_response
+
+        # Get the best article and section
+        best_article_title = relevant_articles[0]
+        article = self.articles[best_article_title]
+        section_name, section_content = self.find_best_section(article, query)
+
+        # Generate personalized response
+        response = self.generate_personalized_response(
+            query, 
+            (article, section_name, section_content),
+            (section_name, section_content)
+        )
+
+        # Update statistics and user profile
+        self.stats['questions_answered'] += 1
+        self.stats['articles_accessed'] += 1
+        self.update_user_interests(query, article)
+
+        # Add to conversation memory
+        self.session_memory[f"qa_{len(self.session_memory)}"] = {
+            'question': query,
+            'answer_source': article['title'],
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # Speak the response
+        self.speak_response(response)
+
+        return response
+
+    def handle_comparison_query(self, query):
+        """Handle comparison queries between topics"""
+        # Extract topics to compare
+        comparison_words = ['compare', 'vs', 'versus', 'difference between', 'contrast']
+
+        for comp_word in comparison_words:
+            if comp_word in query.lower():
+                if comp_word == 'difference between':
+                    # Handle "difference between X and Y"
+                    pattern = r'difference between (.+?) and (.+?)(?:\?|$)'
+                    match = re.search(pattern, query.lower())
+                    if match:
+                        topic1, topic2 = match.groups()
+                    else:
+                        continue
+                else:
+                    # Handle "compare X vs Y" or "X vs Y"
+                    parts = re.split(f'\\b{comp_word}\\b', query.lower(), 1)
+                    if len(parts) >= 2:
+                        topic1 = parts[0].strip()
+                        topic2 = parts[1].strip()
+                        # Clean up common question words
+                        topic1 = re.sub(r'^(what is|what are|tell me about|explain)\s+', '', topic1)
+                        topic2 = re.sub(r'^(what is|what are|tell me about|explain)\s+', '', topic2)
+                    else:
+                        continue
+
+                # Search for articles on both topics
+                articles1 = self.smart_search_articles(topic1, limit=3)
+                articles2 = self.smart_search_articles(topic2, limit=3)
+
+                if articles1 and articles2:
+                    art1 = self.articles[articles1[0]]
+                    art2 = self.articles[articles2[0]]
+
+                    comparison = f"🔍 **Comparing {art1['title']} vs {art2['title']}**\n\n"
+
+                    # Get relevant sections for each
+                    _, content1 = self.find_best_section(art1, topic1)
+                    _, content2 = self.find_best_section(art2, topic2)
+
+                    comparison += f"**📄 {art1['title']}:**\n"
+                    comparison += self.extract_relevant_content(content1, query, 3) + "\n\n"
+
+                    comparison += f"**📄 {art2['title']}:**\n"
+                    comparison += self.extract_relevant_content(content2, query, 3) + "\n\n"
+
+                    # Add key differences if available
+                    comparison += "**🔧 Key Differences:**\n"
+                    comparison += f"• **{art1['title']}**: {art1.get('word_count', 0):,} words, "
+                    comparison += f"Categories: {', '.join(art1.get('categories', [])[:2])}\n"
+                    comparison += f"• **{art2['title']}**: {art2.get('word_count', 0):,} words, "
+                    comparison += f"Categories: {', '.join(art2.get('categories', [])[:2])}"
+
+                    return comparison
+
+        return None
+
+    def generate_no_result_response(self, query):
+        """Generate helpful response when no results found"""
+        suggestions = [
+            "🤔 I couldn't find any relevant Wikipedia articles for your question.",
+            "Let me suggest a few things to try:",
+            "",
+            "💡 **Try these approaches:**",
+            "• Rephrase your question with different keywords",
+            "• Check if you're asking about a very recent topic",
+            "• Try asking about a broader or more general topic first",
+            "• Make sure the topic has a Wikipedia page",
+            "",
+            f"🔍 **Your search:** '{query}'",
+            "",
+            "📚 **Available articles:** " + f"{len(self.articles):,} Wikipedia pages loaded"
+        ]
+
+        # Suggest similar topics if available
+        query_words = re.findall(r'\b\w{4,}\b', query.lower())
+        similar_topics = []
+
+        for word in query_words[:3]:
+            if word in self.search_index:
+                similar_articles = list(self.search_index[word])[:2]
+                for article_title in similar_articles:
+                    article = self.articles.get(article_title)
+                    if article:
+                        similar_topics.append(article['title'])
+
+        if similar_topics:
+            suggestions.extend([
+                "",
+                "🎯 **Similar topics you might ask about:**",
+                *[f"• {topic}" for topic in similar_topics[:3]]
+            ])
+
+        return '\n'.join(suggestions)
+
+    def interactive_mode(self):
+        """Enhanced interactive mode with better UX"""
+        print("\n🤖 Enhanced WikiGPT Interactive Mode")
+        print("=" * 60)
+        print("🎯 Ask me anything about Wikipedia topics!")
+        print("💡 Type 'help' for commands and features")
+        print("🛑 Type 'quit' or press Ctrl+C to exit")
+        print("=" * 60)
+
+        # Show quick stats
+        print(f"📚 Loaded: {len(self.articles):,} articles")
+        print(f"🔍 Search index: {len(self.search_index):,} terms")
+        if self.user_preferences.get('favorite_topics'):
+            print(f"⭐ Your interests: {', '.join(self.user_preferences['favorite_topics'][:3])}")
+        print()
+
+        while True:
+            try:
+                # Enhanced prompt
+                modes = []
+                if self.eli5_mode:
+                    modes.append("ELI5")
+                if self.expert_mode:
+                    modes.append("Expert")
+                if self.tts_mode:
+                    modes.append("🔊")
+
+                mode_str = f" [{'/'.join(modes)}]" if modes else ""
+                query = input(f"🤔 You{mode_str}: ").strip()
+
+                if not query:
+                    continue
+
+                # Handle exit commands
+                if query.lower() in ['quit', 'exit', 'bye', 'goodbye']:
+                    farewell_messages = [
+                        "👋 Thanks for exploring knowledge with me!",
+                        "🌟 Keep learning and stay curious!",
+                        "📚 Until next time, happy knowledge hunting!",
+                        "✨ Goodbye! May your questions always find answers!"
+                    ]
+                    print(f"\n{random.choice(farewell_messages)}")
+
+                    # Save session summary
+                    if self.stats['questions_answered'] > 0:
+                        print(f"📊 Session Summary: {self.stats['questions_answered']} questions answered")
+                        if self.conversation_history:
+                            print(f"🕒 Topics explored: {len(set(conv.get('type') for conv in self.conversation_history))}")
+                    break
+
+                # Process the question
+                print(f"\n🤖 WikiGPT: ", end="", flush=True)
+
+                # Show thinking indicator for longer processing
+                if len(query) > 50 or self.detect_advanced_query_type(query) == 'math':
+                    thinking_msgs = ["Thinking...", "Searching...", "Processing...", "Analyzing..."]
+                    print(f"{random.choice(thinking_msgs)}")
+
+                response = self.answer_question(query)
+                print(response)
+
+                # Ask for feedback occasionally
+                if self.stats['questions_answered'] % 10 == 0 and self.stats['questions_answered'] > 0:
+                    feedback = input("\n💭 Quick feedback - was that helpful? (y/n/skip): ").strip().lower()
+                    if feedback in ['y', 'yes']:
+                        self.user_preferences.setdefault('feedback_history', []).append('positive')
+                        print("😊 Great! I'm glad I could help!")
+                    elif feedback in ['n', 'no']:
+                        self.user_preferences.setdefault('feedback_history', []).append('negative')
+                        print("😔 I'll try to do better next time!")
+                    self.save_user_preferences()
+
+            except KeyboardInterrupt:
+                print("\n\n👋 Goodbye! Thanks for using Enhanced WikiGPT!")
+                break
+            except Exception as e:
+                print(f"\n❌ Oops! Something went wrong: {e}")
+                print("💡 Try rephrasing your question or type 'help' for assistance.")
+
+def main():
+    """Enhanced main function with better error handling"""
+    try:
+        print("🌟 Enhanced WikiGPT v2.0 - Wikipedia-Powered AI Assistant")
+        print("=" * 60)
+
+        # Initialize WikiGPT
+        wiki_gpt = EnhancedWikiGPT()
+
+        # Check if articles are loaded
+        if not wiki_gpt.articles:
+            print("\n⚠️  No Wikipedia articles found!")
+            print("🔧 Please run 'python wiki_extractor.py' first to download articles.")
+            print("📁 Articles should be in the 'wiki_pages' directory.")
+            return
+
+        # Start interactive mode
+        wiki_gpt.interactive_mode()
+
+    except KeyboardInterrupt:
+        print("\n👋 Goodbye!")
+    except Exception as e:
+        print(f"\n❌ Critical error: {e}")
+        print("🔧 Please check your installation and try again.")
+
+if __name__ == "__main__":
+    main() "

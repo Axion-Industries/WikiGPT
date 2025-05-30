@@ -1,0 +1,467 @@
+import requests
+import time
+import json
+import os
+import threading
+from pathlib import Path
+from datetime import datetime
+import signal
+import sys
+
+        # Enhanced configuration
+BASE_URL = "https://en.wikipedia.org/w/api.php"
+HEADERS = {'User-Agent': 'WikipediaScraper/2.0 (Educational-Research-Bot)'}
+BATCH_SIZE = 5000  # Optimized batch size
+PROGRESS_FILE = "scraper_progress.json"
+STATS_FILE = "download_stats.json"
+TOPICS_FILE = "downloaded_topics.txt"
+
+        class WikipediaExtractor:
+            def __init__(self):
+                self.running = True
+                self.current_stats = {
+                    "session_start": datetime.now().isoformat(),
+                    "total_downloaded": 0,
+                    "total_size_mb": 0,
+                    "download_rate": 0,
+                    "current_article": "",
+                    "errors": 0
+                }
+
+                # Setup graceful shutdown
+                signal.signal(signal.SIGINT, self.signal_handler)
+                signal.signal(signal.SIGTERM, self.signal_handler)
+
+                # Start stats updater thread
+                self.stats_thread = threading.Thread(target=self.update_stats_continuously, daemon=True)
+                self.stats_thread.start()
+
+            def signal_handler(self, signum, frame):
+                """Handle shutdown gracefully"""
+                print("\n🛑 Shutting down gracefully... Progress will be saved!")
+                self.running = False
+                self.save_final_stats()
+                sys.exit(0)
+
+            def load_progress(self):
+                """Load progress from file or return default state"""
+                if os.path.exists(PROGRESS_FILE):
+                    try:
+                        with open(PROGRESS_FILE, 'r') as f:
+                            progress = json.load(f)
+                            print(f"📂 Resuming from batch {progress['current_batch']}, processed {progress['processed_count']:,} pages")
+                            return progress
+                    except Exception as e:
+                        print(f"⚠️  Error loading progress: {e}")
+
+                return {
+                    'current_batch': 0,
+                    'processed_count': 0,
+                    'apcontinue': None,
+                    'completed': False,
+                    'last_updated': datetime.now().isoformat()
+                }
+
+            def save_progress(self, progress):
+                """Save current progress to file"""
+                progress['last_updated'] = datetime.now().isoformat()
+                with open(PROGRESS_FILE, 'w') as f:
+                    json.dump(progress, f, indent=2)
+
+            def update_stats_continuously(self):
+                """Update stats file every 10 seconds"""
+                while self.running:
+                    try:
+                        self.save_stats()
+                        time.sleep(10)
+                    except:
+                        pass
+
+            def save_stats(self):
+                """Save current statistics"""
+                try:
+                    # Calculate total size
+                    wiki_dir = Path("wiki_pages")
+                    total_size = 0
+                    file_count = 0
+
+                    if wiki_dir.exists():
+                        for batch_dir in wiki_dir.iterdir():
+                            if batch_dir.is_dir():
+                                for file_path in batch_dir.glob("*.txt"):
+                                    try:
+                                        total_size += file_path.stat().st_size
+                                        file_count += 1
+                                    except:
+                                        pass
+
+                    self.current_stats.update({
+                        "total_downloaded": file_count,
+                        "total_size_mb": round(total_size / (1024 * 1024), 2),
+                        "last_updated": datetime.now().isoformat()
+                    })
+
+                    # Calculate download rate
+                    start_time = datetime.fromisoformat(self.current_stats["session_start"])
+                    elapsed_hours = (datetime.now() - start_time).total_seconds() / 3600
+                    if elapsed_hours > 0:
+                        self.current_stats["download_rate"] = round(file_count / elapsed_hours, 1)
+
+                    with open(STATS_FILE, 'w') as f:
+                        json.dump(self.current_stats, f, indent=2)
+
+                except Exception as e:
+                    print(f"⚠️  Error saving stats: {e}")
+
+            def save_final_stats(self):
+                """Save final statistics on shutdown"""
+                self.current_stats["session_end"] = datetime.now().isoformat()
+                self.save_stats()
+
+            def log_downloaded_topic(self, title):
+                """Log downloaded topic to topics file"""
+                try:
+                    with open(TOPICS_FILE, 'a', encoding='utf-8') as f:
+                        f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - {title}\n")
+                except:
+                    pass
+
+            def get_page_titles_batch(self, apcontinue=None, batch_size=BATCH_SIZE):
+                """Get a batch of page titles with better error handling"""
+                titles = []
+                current_apcontinue = apcontinue
+                retries = 0
+                max_retries = 5
+
+                while len(titles) < batch_size and retries < max_retries:
+                    params = {
+                        "action": "query",
+                        "list": "allpages",
+                        "aplimit": "max",
+                        "format": "json",
+                        "apnamespace": "0",  # Main namespace only
+                        "apfilterredir": "nonredirects"  # Skip redirects
+                    }
+                    if current_apcontinue:
+                        params["apcontinue"] = current_apcontinue
+
+                    try:
+                        response = requests.get(BASE_URL, headers=HEADERS, params=params, timeout=30)
+                        response.raise_for_status()
+                        data = response.json()
+
+                        pages = data.get("query", {}).get("allpages", [])
+                        if not pages:
+                            break
+
+                        for page in pages:
+                            # Filter out unwanted pages
+                            title = page["title"]
+                            if not self.should_skip_page(title):
+                                titles.append(title)
+                            if len(titles) >= batch_size:
+                                break
+
+                        if "continue" in data:
+                            current_apcontinue = data["continue"]["apcontinue"]
+                            time.sleep(0.3)  # Rate limiting
+                        else:
+                            current_apcontinue = None
+                            break
+
+                        retries = 0  # Reset retries on success
+
+                    except Exception as e:
+                        retries += 1
+                        self.current_stats["errors"] += 1
+                        print(f"⚠️  Error fetching titles (attempt {retries}): {e}")
+                        time.sleep(min(2 ** retries, 30))  # Exponential backoff
+
+                return titles, current_apcontinue
+
+            def should_skip_page(self, title):
+                """Determine if a page should be skipped"""
+                skip_patterns = [
+                    "File:", "Category:", "Template:", "Wikipedia:", "Help:", "Portal:",
+                    "Talk:", "User:", "MediaWiki:", "Module:", "Draft:",
+                    "List of", "Timeline of", "Index of"
+                ]
+
+                # Skip disambiguation pages, lists, etc.
+                if any(pattern in title for pattern in skip_patterns):
+                    return True
+
+                # Skip very short titles (likely not articles)
+                if len(title) < 3:
+                    return True
+
+                return False
+
+            def download_page_content(self, title):
+                """Download content for a single page with enhanced extraction"""
+                params = {
+                    "action": "query",
+                    "prop": "extracts|info|categories",
+                    "explaintext": True,
+                    "exintro": False,
+                    "titles": title,
+                    "format": "json",
+                    "inprop": "url",
+                    "cllimit": 10  # Get some categories
+                }
+
+                try:
+                    response = requests.get(BASE_URL, headers=HEADERS, params=params, timeout=30)
+                    response.raise_for_status()
+                    data = response.json()
+
+                    pages = data.get("query", {}).get("pages", {})
+                    for page_id, content in pages.items():
+                        extract = content.get("extract", "")
+
+                        # Only return if substantial content (at least 200 characters)
+                        if len(extract.strip()) > 200:
+                            # Get additional metadata
+                            url = content.get("fullurl", "")
+                            categories = []
+                            if "categories" in content:
+                                categories = [cat["title"] for cat in content["categories"][:5]]
+
+                            return {
+                                "extract": extract,
+                                "url": url,
+                                "categories": categories,
+                                "word_count": len(extract.split())
+                            }
+
+                except Exception as e:
+                    self.current_stats["errors"] += 1
+                    print(f"⚠️  Error downloading {title}: {e}")
+
+                return None
+
+            def process_batch(self, titles, batch_num, start_index):
+                """Process a batch of titles with enhanced content formatting"""
+                batch_dir = Path("wiki_pages") / f"batch_{batch_num:04d}"
+                batch_dir.mkdir(parents=True, exist_ok=True)
+
+                successful = 0
+                failed = 0
+                total_words = 0
+
+                print(f"\n📥 Processing batch {batch_num} ({len(titles)} pages)")
+                print(f"💾 Saving to: {batch_dir}")
+
+                for i, title in enumerate(titles):
+                    if not self.running:
+                        break
+
+                    try:
+                        self.current_stats["current_article"] = title
+                        content_data = self.download_page_content(title)
+
+                        if content_data:
+                            # Create enhanced content format
+                            enhanced_content = self.format_article_content(title, content_data)
+
+                            # Save with better filename
+                            safe_filename = self.create_safe_filename(title, start_index + i)
+                            file_path = batch_dir / f"{safe_filename}.txt"
+
+                            with open(file_path, "w", encoding="utf-8") as f:
+                                f.write(enhanced_content)
+
+                            # Log the topic
+                            self.log_downloaded_topic(title)
+
+                            successful += 1
+                            total_words += content_data["word_count"]
+
+                            # Progress indicator
+                            progress_char = "█" if i % 4 == 0 else "▓" if i % 4 == 1 else "▒" if i % 4 == 2 else "░"
+                            print(f"[{start_index + i + 1:6d}] {progress_char} {title[:60]:<60} ({content_data['word_count']} words)")
+                        else:
+                            failed += 1
+                            print(f"[{start_index + i + 1:6d}] ✗ {title[:60]:<60} (insufficient content)")
+
+                    except Exception as e:
+                        failed += 1
+                        self.current_stats["errors"] += 1
+                        print(f"[{start_index + i + 1:6d}] ❌ {title[:60]:<60} - Error: {e}")
+
+                    # Rate limiting with adaptive delay
+                    time.sleep(0.1 if successful > failed else 0.3)
+
+                avg_words = total_words / max(successful, 1)
+                print(f"\n✅ Batch {batch_num} complete:")
+                print(f"   📄 {successful} successful, {failed} failed")
+                print(f"   📝 {total_words:,} total words, {avg_words:.0f} avg per article")
+
+                return successful
+
+            def format_article_content(self, title, content_data):
+                """Format article content with metadata"""
+                content = f"Title: {title}\n"
+                content += f"URL: {content_data.get('url', '')}\n"
+                content += f"Word Count: {content_data.get('word_count', 0)}\n"
+                content += f"Categories: {', '.join(content_data.get('categories', []))}\n"
+                content += f"Downloaded: {datetime.now().isoformat()}\n"
+                content += "=" * 80 + "\n\n"
+                content += content_data["extract"]
+                return content
+
+            def create_safe_filename(self, title, index):
+                """Create a safe filename from article title"""
+                # Remove problematic characters and limit length
+                safe_title = title.replace('/', '_').replace('\\', '_').replace(':', '_')
+                safe_title = safe_title.replace('?', '').replace('*', '').replace('"', '')
+                safe_title = safe_title.replace('<', '').replace('>', '').replace('|', '_')
+
+                # Limit length and add index
+                if len(safe_title) > 80:
+                    safe_title = safe_title[:80]
+
+                return f"page_{index:07d}_{safe_title}"
+
+            def display_realtime_stats(self):
+                """Display real-time statistics"""
+                print(f"\n📊 REAL-TIME STATISTICS")
+                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                print(f"📄 Articles Downloaded: {self.current_stats['total_downloaded']:,}")
+                print(f"💾 Total Size: {self.current_stats['total_size_mb']:.2f} MB")
+                print(f"⚡ Download Rate: {self.current_stats['download_rate']:.1f} articles/hour")
+                print(f"📑 Current Article: {self.current_stats['current_article'][:50]}...")
+                print(f"❌ Errors: {self.current_stats['errors']}")
+                print(f"🕒 Last Updated: {datetime.now().strftime('%H:%M:%S')}")
+                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+            def run_scraper(self):
+                """Enhanced main scraper function"""
+                # Create output directory
+                os.makedirs("wiki_pages", exist_ok=True)
+
+                # Load progress
+                progress = self.load_progress()
+
+                if progress['completed']:
+                    print("✅ Scraping already completed!")
+                    return
+
+                batch_num = progress['current_batch']
+                processed_count = progress['processed_count']
+                apcontinue = progress['apcontinue']
+
+                print(f"🚀 Starting Wikipedia extraction...")
+                print(f"🎯 Target: ALL Wikipedia articles")
+                print(f"📦 Batch size: {BATCH_SIZE:,} articles")
+                print(f"🛑 Press Ctrl+C to stop gracefully")
+
+                try:
+                    while self.running:
+                        # Display stats every 5 batches
+                        if batch_num % 5 == 0:
+                            self.display_realtime_stats()
+
+                        print(f"\n🔍 Getting batch {batch_num + 1} titles...")
+
+                        # Get next batch of titles
+                        titles, next_apcontinue = self.get_page_titles_batch(apcontinue, BATCH_SIZE)
+
+                        if not titles:
+                            print("🎉 No more pages to process! Wikipedia download complete!")
+                            progress['completed'] = True
+                            self.save_progress(progress)
+                            break
+
+                        # Process the batch
+                        successful_count = self.process_batch(titles, batch_num + 1, processed_count)
+
+                        # Update progress
+                        batch_num += 1
+                        processed_count += len(titles)
+                        apcontinue = next_apcontinue
+
+                        progress.update({
+                            'current_batch': batch_num,
+                            'processed_count': processed_count,
+                            'apcontinue': apcontinue,
+                            'completed': False
+                        })
+
+                        self.save_progress(progress)
+
+                        print(f"\n📈 Progress: {processed_count:,} pages processed across {batch_num} batches")
+
+                        if not next_apcontinue:
+                            print("🎉 All Wikipedia pages processed!")
+                            progress['completed'] = True
+                            self.save_progress(progress)
+                            break
+
+                except KeyboardInterrupt:
+                    print(f"\n🛑 Stopped by user. Progress saved at batch {batch_num}")
+                except Exception as e:
+                    print(f"\n❌ Unexpected error: {e}")
+                finally:
+                    self.running = False
+                    self.save_final_stats()
+                    print(f"💾 All progress saved. Resume anytime by running the script again!")
+
+        def show_stats():
+            """Show enhanced statistics"""
+            print("\n" + "="*60)
+            print("📊 WIKIPEDIA EXTRACTOR STATISTICS")
+            print("="*60)
+
+            # Progress stats
+            if os.path.exists(PROGRESS_FILE):
+                with open(PROGRESS_FILE, 'r') as f:
+                    progress = json.load(f)
+
+                print(f"📦 Current batch: {progress['current_batch']}")
+                print(f"📄 Pages processed: {progress['processed_count']:,}")
+                print(f"✅ Status: {'Completed' if progress['completed'] else 'In Progress'}")
+                print(f"🕒 Last updated: {progress.get('last_updated', 'Unknown')}")
+            else:
+                print("❌ No progress file found")
+
+            # Download stats
+            if os.path.exists(STATS_FILE):
+                with open(STATS_FILE, 'r') as f:
+                    stats = json.load(f)
+
+                print(f"📥 Articles downloaded: {stats['total_downloaded']:,}")
+                print(f"💾 Total size: {stats['total_size_mb']:.2f} MB")
+                print(f"⚡ Download rate: {stats['download_rate']:.1f} articles/hour")
+                print(f"❌ Errors: {stats['errors']}")
+
+            # File count
+            wiki_pages_dir = Path("wiki_pages")
+            if wiki_pages_dir.exists():
+                total_files = sum(len(list(batch_dir.glob("*.txt"))) 
+                                 for batch_dir in wiki_pages_dir.iterdir() 
+                                 if batch_dir.is_dir())
+                print(f"📁 Files saved: {total_files:,}")
+
+                # Calculate storage
+                total_size = sum(sum(f.stat().st_size for f in batch_dir.glob("*.txt"))
+                                for batch_dir in wiki_pages_dir.iterdir() if batch_dir.is_dir())
+                print(f"🗂️  Storage used: {total_size / (1024**3):.2f} GB")
+
+            print("="*60)
+
+        def main():
+            if len(sys.argv) > 1 and sys.argv[1] == "stats":
+                show_stats()
+            else:
+                print("🌍 Enhanced Wikipedia Extractor v2.0")
+                print("📚 Downloads ALL Wikipedia articles with resume capability")
+                print("🎯 Press Ctrl+C to stop gracefully (progress auto-saved)")
+                print("📊 Use 'python wiki_extractor.py stats' to see progress")
+                print("🔄 Run again anytime to resume from last position")
+
+                extractor = WikipediaExtractor()
+                extractor.run_scraper()
+
+        if __name__ == "__main__":
+            main()

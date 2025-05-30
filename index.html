@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WikiGPT - Wikipedia AI Assistant</title>
+    <meta name="description" content="Ask WikiGPT anything about Wikipedia topics! Get conversational, human-like responses powered by Wikipedia's vast knowledge base. Dark-themed, animation-rich interface with browser-based chat history.">
+    
+    <!-- Open Graph tags -->
+    <meta property="og:title" content="WikiGPT - Wikipedia AI Assistant">
+    <meta property="og:description" content="Conversational Wikipedia chatbot with dark theme and animations. Ask questions and get human-like responses from Wikipedia articles.">
+    <meta property="og:type" content="website">
+    <meta property="og:image" content="/generated-icon.png">
+    
+    <!-- Twitter Card tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="WikiGPT - Wikipedia AI Assistant">
+    <meta name="twitter:description" content="Conversational Wikipedia chatbot with dark theme and animations.">
+    <meta name="twitter:image" content="/generated-icon.png">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/png" href="/generated-icon.png">
+    
+    <!-- Preload critical resources -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Critical CSS for loading state -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: #000000;
+            color: #ffffff;
+            overflow: hidden;
+        }
+        
+        #loading-screen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            transition: opacity 0.5s ease-out;
+        }
+        
+        .loading-logo {
+            width: 64px;
+            height: 64px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+            animation: pulse-glow 2s infinite;
+        }
+        
+        .loading-text {
+            font-size: 28px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #ffffff, #e0e0e0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+        
+        .loading-subtitle {
+            font-size: 16px;
+            color: #ffffff;
+            opacity: 0.8;
+            margin-bottom: 32px;
+        }
+        
+        .loading-spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-top: 3px solid #ffffff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes pulse-glow {
+            0%, 100% {
+                box-shadow: 0 0 20px rgba(102, 126, 234, 0.3);
+            }
+            50% {
+                box-shadow: 0 0 40px rgba(102, 126, 234, 0.6);
+            }
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen">
+        <div class="loading-logo">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2C13.1 2 14 2.9 14 4C14 5.1 13.1 6 12 6C10.9 6 10 5.1 10 4C10 2.9 10.9 2 12 2ZM21 9V7L15 1L9 7V9C9 10.1 9.9 11 11 11V16.5C10.5 16.6 10 16.8 9.5 17L7.1 16.3C7.6 15.3 7.2 14.1 6.2 13.6S4.1 13.8 3.6 14.8C3.1 15.8 3.5 17 4.5 17.5C5.2 17.9 6.1 17.7 6.6 17.1L9 17.8C8.7 18.4 8.5 19.1 8.5 19.8C8.5 21.6 9.9 23 11.7 23H12.3C14.1 23 15.5 21.6 15.5 19.8C15.5 19.1 15.3 18.4 15 17.8L17.4 17.1C17.9 17.7 18.8 17.9 19.5 17.5C20.5 17 20.9 15.8 20.4 14.8C19.9 13.8 18.7 13.4 17.7 13.9C16.7 14.4 16.3 15.6 16.8 16.6L14.4 17.3C13.9 16.7 13.5 16.1 13 15.6V11C14.1 11 15 10.1 15 9H21Z" fill="white"/>
+            </svg>
+        </div>
+        <div class="loading-text">WikiGPT</div>
+        <div class="loading-subtitle">Loading Wikipedia AI Assistant...</div>
+        <div class="loading-spinner"></div>
+    </div>
+
+    <!-- App Root -->
+    <div id="root"></div>
+
+    <!-- App Loading Script -->
+    <script>
+        // Show loading screen for minimum time for smooth UX
+        const minLoadTime = 1500;
+        const startTime = Date.now();
+        
+        function hideLoadingScreen() {
+            const loadingScreen = document.getElementById('loading-screen');
+            const elapsedTime = Date.now() - startTime;
+            const remainingTime = Math.max(0, minLoadTime - elapsedTime);
+            
+            setTimeout(() => {
+                loadingScreen.classList.add('fade-out');
+                setTimeout(() => {
+                    loadingScreen.style.display = 'none';
+                }, 500);
+            }, remainingTime);
+        }
+        
+        // Hide loading screen when app is ready
+        window.addEventListener('load', hideLoadingScreen);
+        
+        // Fallback: hide loading screen after maximum time
+        setTimeout(hideLoadingScreen, 5000);
+    </script>
+
+    <!-- Main App Script -->
+    <script type="module" src="/client/src/main.tsx"></script>
+</body>
+</html>
+</html>

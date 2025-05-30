@@ -1,0 +1,7 @@
+Make the chat interface visually match the requested dark theme
+
+Applies black/purple background, white text, and backdrop blur to ChatInterface, MessageBubble, and TypingIndicator components.
+
+Replit-Commit-Author: Agent
+Replit-Commit-Session-Id: 593c2c6b-a766-4693-931c-3dc58a8a16c8
+Replit-Commit-Screenshot-Url: https://storage.googleapis.com/screenshot-production-us-central1/657842a5-eb8d-41ae-8dcb-3d4ffa9da9ca/b62692e7-5d91-4894-9c84-c72973a55865.jpg
